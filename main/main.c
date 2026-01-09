@@ -1,15 +1,12 @@
+#include <stdio.h>
+#include <string.h>
 #include "bt_sender.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "driver/uart.h"
 
-static const char *TAG = "TEST";
-
-#define CMD                 0xA0
-#define BURST_COUNT         50
-#define TARGET_DELAY_SEC    3
-#define TARGET_DELAY_US     (TARGET_DELAY_SEC * 1000000)
-#define PLAYER_BIT(id)      (1ULL << (id))
+static const char *TAG = "UART_CTRL";
 
 void app_main(void)
 {
@@ -20,22 +17,46 @@ void app_main(void)
         return;
     }
 
+    char line[128];
+
     while (1) {
-        // 2. Configure Burst
-        bt_sender_config_t burst_cfg = {
-            .cmd_type    = CMD,
-            .burst_count = BURST_COUNT,
-            .delay_us    = TARGET_DELAY_US,
-            .target_mask = PLAYER_BIT(0) | PLAYER_BIT(1) 
-        };
+        if (fgets(line, sizeof(line), stdin) != NULL) {
+            // Remove newline character
+            line[strcspn(line, "\r\n")] = 0;
 
-        ESP_LOGI(TAG, "Sending CMD: 0x%02X | Count: %d | Delay: %d sec | Targets: 0x%llX", 
-                 burst_cfg.cmd_type, burst_cfg.burst_count, TARGET_DELAY_SEC, burst_cfg.target_mask);
+            if (strlen(line) == 0) continue;
 
-        // 3. Execute Burst
-        int sent_count = bt_sender_execute_burst(&burst_cfg);
+            int cmd_in = 0;
+            int burst_count = 0;
+            unsigned long delay_us = 0;
+            unsigned long long target_mask = 0;
 
-        ESP_LOGI(TAG, "Burst finished. Sent %d packets.", sent_count);
-        vTaskDelay(pdMS_TO_TICKS(5000));
+            // Parse input line
+            int args = sscanf(line, "%d,%d,%lu,%llx", &cmd_in, &burst_count, &delay_us, &target_mask);
+
+            if (args == 4) {
+                ESP_LOGI(TAG, "Received: Cmd=%d, Count=%d, Delay=%lu us, Mask=0x%llX", 
+                         cmd_in, burst_count, delay_us, target_mask);
+
+                // Configure burst
+                bt_sender_config_t burst_cfg = {
+                    .cmd_type    = (uint8_t)cmd_in,
+                    .burst_count = burst_count,
+                    .delay_us    = delay_us,
+                    .target_mask = (uint64_t)target_mask
+                };
+
+                // 2. Execute Burst
+                int sent = bt_sender_execute_burst(&burst_cfg);
+                
+                // 3. Report Result
+                printf("RESULT:OK,SENT:%d\n", sent);
+            } else {
+                ESP_LOGE(TAG, "Format Error. Received: %s", line);
+                printf("RESULT:ERROR\n");
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
