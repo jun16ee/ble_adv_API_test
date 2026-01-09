@@ -114,11 +114,12 @@ int bt_sender_execute_burst(const bt_sender_config_t *config) {
         return 0;
     }
 
-    int run_count = (config->burst_count > MAX_BURST_COUNT) ? MAX_BURST_COUNT : config->burst_count;
+    int burst_count = config->delay_us / 20000;
+    if (burst_count > 100) burst_count = 100; // Cap burst count to 100 for safety
     int64_t start_us = esp_timer_get_time();
     int64_t target_us = start_us + config->delay_us;
 
-    for (int i = 0; i < run_count; i++) {
+    for (int i = 0; i < burst_count; i++) {
         int64_t now_us = esp_timer_get_time();
         int32_t remain_delay = (int32_t)(target_us - now_us - TX_OFFSET_US);
         if (remain_delay < 0) remain_delay = 0;
@@ -138,5 +139,5 @@ int bt_sender_execute_burst(const bt_sender_config_t *config) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    return config->burst_count;
+    return burst_count;
 }

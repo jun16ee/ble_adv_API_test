@@ -27,21 +27,16 @@ void app_main(void)
             if (strlen(line) == 0) continue;
 
             int cmd_in = 0;
-            int burst_count = 0;
             unsigned long delay_us = 0;
             unsigned long long target_mask = 0;
 
             // Parse input line
-            int args = sscanf(line, "%d,%d,%lu,%llx", &cmd_in, &burst_count, &delay_us, &target_mask);
+            int args = sscanf(line, "%d,%lu,%llx", &cmd_in, &delay_us, &target_mask);
 
-            if (args == 4) {
-                ESP_LOGI(TAG, "Received: Cmd=%d, Count=%d, Delay=%lu us, Mask=0x%llX", 
-                         cmd_in, burst_count, delay_us, target_mask);
-
+            if (args == 3) {
                 // Configure burst
                 bt_sender_config_t burst_cfg = {
                     .cmd_type    = (uint8_t)cmd_in,
-                    .burst_count = burst_count,
                     .delay_us    = delay_us,
                     .target_mask = (uint64_t)target_mask
                 };
