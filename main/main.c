@@ -4,6 +4,7 @@
 #include "bt_sender.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
@@ -19,6 +20,9 @@ static const char *TAG = "UART_SIMPLE";
 // 接收緩衝區
 static char packet_buf[128];
 static int packet_idx = 0;
+
+// 定義 UART 事件 queue Handle
+static QueueHandle_t uart0_queue;
 
 void process_byte(uint8_t c) {
     // 收到換行符號，代表指令結束
@@ -68,6 +72,53 @@ void process_byte(uint8_t c) {
     }
 }
 
+static void uart_event_task(void *pvParameters)
+{
+    uart_event_t event;
+    uint8_t* dtmp = (uint8_t*) malloc(BUF_SIZE);
+
+    for(;;) {
+        // 等待 UART 事件 (Block 直到有中斷發生，不會消耗 CPU)
+        if(xQueueReceive(uart0_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
+            
+            switch(event.type) {
+                // 收到資料事件
+                case UART_DATA:
+                    // 資料已經在 Ring Buffer 裡了，讀出來處理
+                    // timeout 設為 0，因為我們知道資料已經到了
+                    uart_read_bytes(UART_PORT_NUM, dtmp, event.size, 0);
+                    
+                    for (int i = 0; i < event.size; i++) {
+                        process_byte(dtmp[i]);
+                    }
+                    break;
+
+                // 處理 FIFO 溢出 (這通常是因為沒及時讀取)
+                case UART_FIFO_OVF:
+                    ESP_LOGW(TAG, "hw fifo overflow");
+                    uart_flush_input(UART_PORT_NUM);
+                    xQueueReset(uart0_queue);
+                    break;
+
+                // 處理 Ring Buffer 滿
+                case UART_BUFFER_FULL:
+                    ESP_LOGW(TAG, "ring buffer full");
+                    uart_flush_input(UART_PORT_NUM);
+                    xQueueReset(uart0_queue);
+                    break;
+
+                // 其他事件 (Break, Parity Error 等) 可視需求處理
+                default:
+                    ESP_LOGI(TAG, "uart event type: %d", event.type);
+                    break;
+            }
+        }
+    }
+    free(dtmp);
+    dtmp = NULL;
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     // 1. 初始化 BT Sender
@@ -83,24 +134,16 @@ void app_main(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, BUF_SIZE * 2, 20, &uart0_queue, 0));
 
-    uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
+    // 4. 建立 UART 事件處理 Task
+    xTaskCreate(uart_event_task, "uart_event_task", 4096, NULL, 12, NULL);
 
     ESP_LOGI(TAG, "UART Listening...");
 
     while (1) {
-        // 3. 直接從硬體讀取
-        int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, 20 / portTICK_PERIOD_MS); // TODO: fix timeout
-
-        if (len > 0) {
-            for (int i = 0; i < len; i++) {
-                process_byte(data[i]);
-            }
-        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    
-    free(data);
 }
