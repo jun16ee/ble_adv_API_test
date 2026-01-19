@@ -8,46 +8,54 @@
 #include "esp_log.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
 static const char *TAG = "UART_SIMPLE";
 
-// --- 設定 ---
 #define UART_PORT_NUM      UART_NUM_0
 #define BUF_SIZE           1024
 #define TXD_PIN            UART_PIN_NO_CHANGE
 #define RXD_PIN            UART_PIN_NO_CHANGE
 
-// 接收緩衝區
 static char packet_buf[128];
 static int packet_idx = 0;
 
-// 定義 UART 事件 queue Handle
 static QueueHandle_t uart0_queue;
 
-void process_byte(uint8_t c) {
-    // 收到換行符號，代表指令結束
+void process_byte(uint8_t c, int64_t t_wake, int64_t t_read_done) {
     if (c == '\n') {
-        packet_buf[packet_idx] = '\0'; // 補上字串結尾
-    
-        // 格式: cmd,delay,hex_mask
-        // 例如: 160,1000000,23
-        
+        packet_buf[packet_idx] = '\0';
+        // cmd,delay,hex_mask        
         int cmd_in = 0;
         unsigned long delay_us = 0;
         unsigned long prep_led_us = 0;
         unsigned long long target_mask = 0;
+        int in_data[3];
 
-        int args = sscanf(packet_buf, "%d,%lu,%lu,%llx", &cmd_in, &delay_us, &prep_led_us, &target_mask);
+        int args = sscanf(packet_buf, "%d,%lu,%lu,%llx,%d,%d,%d", &cmd_in, &delay_us, &prep_led_us, &target_mask, &in_data[0], &in_data[1], &in_data[2]);
 
-        if (args == 4) {
+        if (args == 7) {
+            // [T2] 解析完成時間
+            int64_t t_parse_done = esp_timer_get_time();
+
+            // 計算各階段耗時
+            int64_t d_read  = t_read_done - t_wake;   // 讀取耗時
+            int64_t d_parse = t_parse_done - t_read_done; // 解析耗時
+            int64_t d_total = t_parse_done - t_wake;  // 總耗時
+
+            // 格式: ACK:OK:讀取耗時:解析耗時:總耗時
+            char ack_msg[64];
+            snprintf(ack_msg, sizeof(ack_msg), "ACK:OK:%lld:%lld:%lld\n", d_read, d_parse, d_total);
+            uart_write_bytes(UART_PORT_NUM, ack_msg, strlen(ack_msg));
             bt_sender_config_t burst_cfg = {
                 .cmd_type = (uint8_t)cmd_in,
                 .delay_us = delay_us,
                 .prep_led_us = prep_led_us,
-                .target_mask = (uint64_t)target_mask
+                .target_mask = (uint64_t)target_mask,
+                .data[0]=(uint8_t)in_data[0],
+                .data[1]=(uint8_t)in_data[1],
+                .data[2]=(uint8_t)in_data[2]
             };
-            const char* ack_msg = "ACK:OK\n";
-            uart_write_bytes(UART_PORT_NUM, ack_msg, strlen(ack_msg));
             bt_sender_execute_burst(&burst_cfg);
         } else {
             // 解析失敗 (可能是雜訊，或是格式不對)
@@ -80,16 +88,17 @@ static void uart_event_task(void *pvParameters)
     for(;;) {
         // 等待 UART 事件 (Block 直到有中斷發生，不會消耗 CPU)
         if(xQueueReceive(uart0_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
-            
+            // [T0] Task 醒來 (收到中斷通知)
+            int64_t t_wake = esp_timer_get_time();
             switch(event.type) {
                 // 收到資料事件
                 case UART_DATA:
                     // 資料已經在 Ring Buffer 裡了，讀出來處理
-                    // timeout 設為 0，因為我們知道資料已經到了
                     uart_read_bytes(UART_PORT_NUM, dtmp, event.size, 0);
-                    
+                    // [T1] 資料讀取完畢 (已從 RingBuffer 複製到 dtmp)
+                    int64_t t_read_done = esp_timer_get_time();
                     for (int i = 0; i < event.size; i++) {
-                        process_byte(dtmp[i]);
+                        process_byte(dtmp[i], t_wake, t_read_done);
                     }
                     break;
 
@@ -126,7 +135,7 @@ void app_main(void)
 
     // 2. 配置 Native UART 驅動
     uart_config_t uart_config = {
-        .baud_rate = 115200,
+        .baud_rate = 921600,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,

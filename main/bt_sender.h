@@ -22,6 +22,7 @@ typedef struct {
     uint32_t delay_us;
     uint32_t prep_led_us;
     uint64_t target_mask;
+    uint8_t data[3];
 } bt_sender_config_t;
 
 int bt_sender_execute_burst(const bt_sender_config_t *config);

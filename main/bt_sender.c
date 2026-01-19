@@ -20,7 +20,7 @@ static uint8_t hci_cmd_buf[128];
 static bool is_initialized = false;
 
 // Helper functions to send HCI commands
-static void hci_cmd_send_ble_set_adv_data(uint8_t cmd_type, uint32_t delay_us, uint32_t prep_led_us, uint64_t target_mask) {
+static void hci_cmd_send_ble_set_adv_data(uint8_t cmd_type, uint32_t delay_us, uint32_t prep_led_us, uint64_t target_mask,uint8_t data[3]) {
     uint8_t raw_adv_data[31];
     uint8_t idx = 0;
     
@@ -53,6 +53,10 @@ static void hci_cmd_send_ble_set_adv_data(uint8_t cmd_type, uint32_t delay_us, u
     raw_adv_data[idx++] = (prep_led_us >> 16) & 0xFF;
     raw_adv_data[idx++] = (prep_led_us >> 8)  & 0xFF;
     raw_adv_data[idx++] = (prep_led_us)       & 0xFF;
+    // rgb
+    raw_adv_data[idx++] = data[0];
+    raw_adv_data[idx++] = data[1];
+    raw_adv_data[idx++] = data[2];
 
     uint16_t sz = make_cmd_ble_set_adv_data(hci_cmd_buf, idx, raw_adv_data);
     if (esp_vhci_host_check_send_available()) esp_vhci_host_send_packet(hci_cmd_buf, sz);
@@ -124,14 +128,15 @@ int bt_sender_execute_burst(const bt_sender_config_t *config) {
     if (burst_count > 100) burst_count = 100; // Cap burst count to 100 for safety
     int64_t start_us = esp_timer_get_time();
     int64_t target_us = start_us + config->delay_us;
+    
 
     for (int i = 0; i < burst_count; i++) {
         int64_t now_us = esp_timer_get_time();
         int32_t remain_delay = (int32_t)(target_us - now_us - TX_OFFSET_US);
         if (remain_delay < 0) remain_delay = 0;
-
+        
         // 1. Set Advertising Data
-        hci_cmd_send_ble_set_adv_data(config->cmd_type, remain_delay, config->prep_led_us, config->target_mask);
+        hci_cmd_send_ble_set_adv_data(config->cmd_type, remain_delay, config->prep_led_us, config->target_mask,config->data);
         esp_rom_delay_us(500);
 
         // 2. Start Advertising
